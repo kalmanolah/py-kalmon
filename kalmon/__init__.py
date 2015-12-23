@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 
 @click.command()
 @click.option('--debug', '-d', is_flag=True)
+@click.option('--mqtt-host', envvar='KALMON_MQTT_HOST', required=True)
+@click.option('--mqtt-port', envvar='KALMON_MQTT_PORT', required=True)
+@click.option('--mqtt-username', envvar='KALMON_MQTT_USERNAME', required=True)
+@click.option('--mqtt-password', envvar='KALMON_MQTT_PASSWORD', required=True)
 @click.argument('node')
 @click.argument('type')
 @click.argument('command')
-def main(debug, node, type, command):
+def main(debug, mqtt_host, mqtt_port, mqtt_username, mqtt_password, node, type, command):
     """Handle a kalmon command."""
     mqtt_messages = []
 
@@ -47,7 +51,7 @@ def main(debug, node, type, command):
         mqtt_publish.multiple(
             mqtt_messages,
             hostname=mqtt_host,
-            port=mqtt_port,
+            port=int(mqtt_port),
             auth={
                 'username': mqtt_username,
                 'password': mqtt_password
@@ -57,4 +61,4 @@ def main(debug, node, type, command):
     logger.debug('Finished')
 
 if __name__ == '__main__':
-    main(obj={})
+    main(auto_envvar_prefix='KALMON')
