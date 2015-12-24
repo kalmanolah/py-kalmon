@@ -33,6 +33,7 @@ setup(
 
         'kalmon.controllers': [
             'ws2812 = kalmon.controllers:WS2812Controller',
+            'gpio = kalmon.controllers:GPIOController',
         ],
     },
 
