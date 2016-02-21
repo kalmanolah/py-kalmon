@@ -17,6 +17,7 @@ $ sudo pip3 install -U git+https://github.com/kalmanolah/py-kalmon.git
 * python3
 * click
 * paho-mqtt
+* prettytable
 
 ## License
 
