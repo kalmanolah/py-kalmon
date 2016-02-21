@@ -94,8 +94,14 @@ class KalmonController:
         def on_mqtt_publish(client, userdata, mid):
             logger.debug('Published message "%s" over MQTT' % mid)
 
-            if mid in self.mqtt_publishes:
-                self.mqtt_publishes.remove(mid)
+            # Since the message ID is only generated when publishing,
+            # we have to publish BEFORE registering any callbacks.
+            # To prevent issues, we wait until these callbacks have been
+            # registered before continueing
+            while mid not in self.mqtt_publishes:
+                self.wait()
+
+            self.mqtt_publishes.remove(mid)
 
             if mid in self.mqtt_publish_callbacks:
                 self.mqtt_publish_callbacks[mid](client, userdata, mid)
@@ -116,7 +122,7 @@ class KalmonController:
             logger.debug('Connecting to MQTT server at "%s:%s"' % (self.mqtt_config['host'], self.mqtt_config['port']))
             self.mqtt.connect(self.mqtt_config['host'], self.mqtt_config['port'], self.mqtt_config['keepalive'])
             self.mqtt.loop_start()
-        except ConnectionRefusedError as e:
+        except Exception as e:
             logger.error('Error while connecting to MQTT server: %s' % e)
             exit(1)
 
@@ -144,13 +150,14 @@ class KalmonController:
             payload = json.dumps(data)
 
         result, mid = self.mqtt.publish(topic, payload)
-        self.mqtt_publishes.append(mid)
 
         if on_publish:
             self.mqtt_publish_callbacks[mid] = on_publish
 
         if on_response and data and data.get('rid', None):
             self.mqtt_response_callbacks[data['rid']] = on_response
+
+        self.mqtt_publishes.append(mid)
 
         while mid in self.mqtt_publishes:
             self.wait()
@@ -398,12 +405,12 @@ def node_file_upload(ctx, file, filename):
 
 @node_file.command('create')
 @click.argument('filename')
-@click.argument('content', required=False)
+@click.argument('content', default='\n', required=False)
 @click.option('--from-stdin', '-in', help='Supply file content by piping to STDIN.', is_flag=True)
 @click.pass_context
 def node_file_create(ctx, filename, content, from_stdin):
     """Create a file on a node."""
-    if not content:
+    if from_stdin:
         content = click.get_text_stream('stdin').read(8196)
 
     try:
