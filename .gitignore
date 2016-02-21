@@ -6,3 +6,4 @@ dist/
 build/
 MANIFEST
 *.egg-info/
+kalmon-ESP8266/

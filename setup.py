@@ -40,6 +40,7 @@ setup(
     install_requires=[
         'paho-mqtt',
         'click',
-        'prettytable'
+        'prettytable',
+        'gitpython'
     ],
 )

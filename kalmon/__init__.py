@@ -6,9 +6,16 @@ from pkg_resources import iter_entry_points
 from threading import Timer, Event
 from prettytable import PrettyTable, PLAIN_COLUMNS, DEFAULT
 from math import ceil
+import git
 import time
 import uuid
 import json
+import os
+
+
+REPOSITORY_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
+REPOSITORY_SRC_PREFIX = 'src/'
+CFG_KEY_VERSION = 'kalmon_ref'
 
 
 logger = logging.getLogger(__name__)
@@ -353,6 +360,7 @@ def node_list(ctx, timeout):
 @click.pass_context
 def node_select(ctx, node_id):
     """Select a node."""
+    logger.debug('Selecting node with ID "%s"', node_id)
     node = ctx.obj['controller'].select_node(node_id)
     ctx.obj['node'] = node
 
@@ -466,20 +474,83 @@ def node_configuration_set(ctx, key, value):
         exit(1)
 
 
-def generate_table(columns, rows, plain=False, sort=None, reversesort=False):
-    """Generate a pretty table."""
-    tbl = PrettyTable(columns)
-    tbl.set_style(PLAIN_COLUMNS if plain else DEFAULT)
-    tbl.header = not plain
-    [tbl.add_row(x) for x in rows]
-    tbl.align = 'l'
+@node_select.command('upgrade')
+@click.option('--repository-url', '-u', default=REPOSITORY_URL, help='Git url for the repository.')
+@click.option('--clone-path', '-p', default='kalmon-ESP8266', help='Path to clone repository to.')
+@click.pass_context
+def node_upgrade(ctx, repository_url, clone_path):
+    """Upgrade a node."""
+    logger.debug('Upgrading node')
 
-    if sort:
-        tbl.sortby = sort
+    try:
+        repo = git.repo.base.Repo(clone_path)
+    except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError) as e:
+        logger.warn('Repository does not exist yet, cloning it now')
+        repo = git.repo.base.Repo.clone_from(repository_url, clone_path)
 
-    tbl.reversesort = reversesort
+    logger.debug('Performing a pull of the repository')
+    repo.remotes.origin.pull()
 
-    return tbl
+    node = ctx.obj['node']
+    cfg = node.get_configuration()
+    remove_files = []
+    upload_files = []
+
+    latest_version_ref = str(repo.head.commit)
+    version_ref = cfg.get(CFG_KEY_VERSION, None)
+
+    if version_ref:
+        logger.debug('Found commit hash "%s" on node' % version_ref)
+    else:
+        for commit in repo.iter_commits(rev='HEAD', max_parents=0):
+            version_ref = str(commit)
+
+        logger.debug('Using first commit\'s hash "%s", since none could be found on node' % version_ref)
+
+    logger.debug('Performing diff between HEAD and commit "%s" to determine file changes' % version_ref)
+    diff = repo.commit(version_ref).diff(latest_version_ref)
+
+    for d in diff.iter_change_type('A'):
+        upload_files.append(d.b_path)
+
+    for d in diff.iter_change_type('D'):
+        remove_files.append(d.a_path)
+
+    for d in diff.iter_change_type('M'):
+        upload_files.append(d.b_path)
+
+    for d in diff.iter_change_type('R'):
+        remove_files.append(d.a_path)
+        upload_files.append(d.b_path)
+
+    upload_files = [x for x in upload_files if x.startswith(REPOSITORY_SRC_PREFIX)]
+    remove_files = [x for x in remove_files if x.startswith(REPOSITORY_SRC_PREFIX)]
+
+    # Files which have to be both uploaded and removed should not be removed
+    remove_files = [x for x in remove_files if x not in upload_files]
+
+    logger.debug('Determined that %s files are to be removed, %s files are to be uploaded' %
+                 (len(remove_files), len(upload_files)))
+
+    for f in remove_files:
+        node.remove_file(f)
+
+    for f in upload_files:
+        filename = f
+        filepath = os.path.join(clone_path, f)
+        content = ''
+
+        if filename[0:len(REPOSITORY_SRC_PREFIX)] == REPOSITORY_SRC_PREFIX:
+            filename = filename[len(REPOSITORY_SRC_PREFIX):]
+
+        with open(filepath, "r") as f:
+            content = f.read()
+            print(content)
+
+        node.create_file(filename, content=f)
+
+    logger.debug('Upgrade finished, writing commit hash "%s" to node' % latest_version_ref)
+    node.set_configuration(CFG_KEY_VERSION, latest_version_ref)
 
 
 @node_select.command('ctrl')
@@ -518,6 +589,23 @@ def node_custom_control(ctx, type, command):
             ctx.obj['controller'].publish_mqtt(mqtt_message['topic'], data=mqtt_message['payload'])
 
     logger.debug('Finished')
+
+
+def generate_table(columns, rows, plain=False, sort=None, reversesort=False):
+    """Generate a pretty table."""
+    tbl = PrettyTable(columns)
+    tbl.set_style(PLAIN_COLUMNS if plain else DEFAULT)
+    tbl.header = not plain
+    [tbl.add_row(x) for x in rows]
+    tbl.align = 'l'
+
+    if sort:
+        tbl.sortby = sort
+
+    tbl.reversesort = reversesort
+
+    return tbl
+
 
 if __name__ == '__main__':
     kalmon(obj={}, auto_envvar_prefix='KALMON')
