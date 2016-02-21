@@ -477,8 +477,9 @@ def node_configuration_set(ctx, key, value):
 @node_select.command('upgrade')
 @click.option('--repository-url', '-u', default=REPOSITORY_URL, help='Git url for the repository.')
 @click.option('--clone-path', '-p', default='kalmon-ESP8266', help='Path to clone repository to.')
+@click.option('--reference-only', '-r', is_flag=True, help='Only update the version reference without touching files.')
 @click.pass_context
-def node_upgrade(ctx, repository_url, clone_path):
+def node_upgrade(ctx, repository_url, clone_path, reference_only):
     """Upgrade a node."""
     logger.debug('Upgrading node')
 
@@ -499,55 +500,56 @@ def node_upgrade(ctx, repository_url, clone_path):
     latest_version_ref = str(repo.head.commit)
     version_ref = cfg.get(CFG_KEY_VERSION, None)
 
-    if version_ref:
-        logger.debug('Found commit hash "%s" on node' % version_ref)
-    else:
-        for commit in repo.iter_commits(rev='HEAD', max_parents=0):
-            version_ref = str(commit)
+    if not reference_only:
+        if version_ref:
+            logger.debug('Found commit hash "%s" on node' % version_ref)
+        else:
+            for commit in repo.iter_commits(rev='HEAD', max_parents=0):
+                version_ref = str(commit)
 
-        logger.debug('Using first commit\'s hash "%s", since none could be found on node' % version_ref)
+            logger.debug('Using first commit\'s hash "%s", since none could be found on node' % version_ref)
 
-    logger.debug('Performing diff between HEAD and commit "%s" to determine file changes' % version_ref)
-    diff = repo.commit(version_ref).diff(latest_version_ref)
+        logger.debug('Performing diff between HEAD and commit "%s" to determine file changes' % version_ref)
+        diff = repo.commit(version_ref).diff(latest_version_ref)
 
-    for d in diff.iter_change_type('A'):
-        upload_files.append(d.b_path)
+        for d in diff.iter_change_type('A'):
+            upload_files.append(d.b_path)
 
-    for d in diff.iter_change_type('D'):
-        remove_files.append(d.a_path)
+        for d in diff.iter_change_type('D'):
+            remove_files.append(d.a_path)
 
-    for d in diff.iter_change_type('M'):
-        upload_files.append(d.b_path)
+        for d in diff.iter_change_type('M'):
+            upload_files.append(d.b_path)
 
-    for d in diff.iter_change_type('R'):
-        remove_files.append(d.a_path)
-        upload_files.append(d.b_path)
+        for d in diff.iter_change_type('R'):
+            remove_files.append(d.a_path)
+            upload_files.append(d.b_path)
 
-    upload_files = [x for x in upload_files if x.startswith(REPOSITORY_SRC_PREFIX)]
-    remove_files = [x for x in remove_files if x.startswith(REPOSITORY_SRC_PREFIX)]
+        upload_files = [x for x in upload_files if x.startswith(REPOSITORY_SRC_PREFIX)]
+        remove_files = [x for x in remove_files if x.startswith(REPOSITORY_SRC_PREFIX)]
 
-    # Files which have to be both uploaded and removed should not be removed
-    remove_files = [x for x in remove_files if x not in upload_files]
+        # Files which have to be both uploaded and removed should not be removed
+        remove_files = [x for x in remove_files if x not in upload_files]
 
-    logger.debug('Determined that %s files are to be removed, %s files are to be uploaded' %
-                 (len(remove_files), len(upload_files)))
+        logger.debug('Determined that %s files are to be removed, %s files are to be uploaded' %
+                     (len(remove_files), len(upload_files)))
 
-    for f in remove_files:
-        node.remove_file(f)
+        for f in remove_files:
+            node.remove_file(f)
 
-    for f in upload_files:
-        filename = f
-        filepath = os.path.join(clone_path, f)
-        content = ''
+        for f in upload_files:
+            filename = f
+            filepath = os.path.join(clone_path, f)
+            content = ''
 
-        if filename[0:len(REPOSITORY_SRC_PREFIX)] == REPOSITORY_SRC_PREFIX:
-            filename = filename[len(REPOSITORY_SRC_PREFIX):]
+            if filename[0:len(REPOSITORY_SRC_PREFIX)] == REPOSITORY_SRC_PREFIX:
+                filename = filename[len(REPOSITORY_SRC_PREFIX):]
 
-        with open(filepath, "r") as f:
-            content = f.read()
-            print(content)
+            with open(filepath, "r") as f:
+                content = f.read()
+                print(content)
 
-        node.create_file(filename, content=f)
+            node.create_file(filename, content=f)
 
     logger.debug('Upgrade finished, writing commit hash "%s" to node' % latest_version_ref)
     node.set_configuration(CFG_KEY_VERSION, latest_version_ref)
