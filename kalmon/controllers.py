@@ -18,7 +18,6 @@ class GPIOController(Controller):
 
     def handle_command(self, node, command):
         """Handle a command."""
-        payload = self.payload_template
         method, pin, state = command.split(',')
         pin = int(pin)
         state = state == 'HIGH'
