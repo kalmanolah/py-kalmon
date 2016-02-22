@@ -609,5 +609,10 @@ def generate_table(columns, rows, plain=False, sort=None, reversesort=False):
     return tbl
 
 
-if __name__ == '__main__':
+def cli():
+    """Command-line entry point."""
     kalmon(obj={}, auto_envvar_prefix='KALMON')
+
+
+if __name__ == '__main__':
+    cli()

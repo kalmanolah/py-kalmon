@@ -28,7 +28,7 @@ setup(
     packages=find_packages(),
     entry_points={
         'console_scripts': [
-            'kalmon = kalmon:kalmon',
+            'kalmon = kalmon:cli',
         ],
 
         'kalmon.controllers': [
