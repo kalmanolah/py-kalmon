@@ -547,9 +547,8 @@ def node_upgrade(ctx, repository_url, clone_path, reference_only):
 
             with open(filepath, "r") as f:
                 content = f.read()
-                print(content)
 
-            node.create_file(filename, content=f)
+            node.create_file(filename, content=content)
 
     logger.debug('Upgrade finished, writing commit hash "%s" to node' % latest_version_ref)
     node.set_configuration(CFG_KEY_VERSION, latest_version_ref)
