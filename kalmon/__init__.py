@@ -6,6 +6,7 @@ from pkg_resources import iter_entry_points
 from threading import Timer, Event
 from prettytable import PrettyTable, PLAIN_COLUMNS, DEFAULT
 from math import ceil
+import re
 import git
 import time
 import uuid
@@ -13,8 +14,10 @@ import json
 import os
 
 
-REPOSITORY_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
-REPOSITORY_SRC_PREFIX = 'src/'
+FW_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
+FW_SRC_PREFIX = 'src/'
+FW_MODULE_PREFIX = 'module/'
+FW_BUILTIN_MODULES = ['kalmon', 'settings']
 CFG_KEY_VERSION = 'kalmon_ref'
 
 
@@ -264,7 +267,7 @@ class KalmonNode:
 
         return data
 
-    def create_file(self, filename, content=''):
+    def create_file(self, filename, content='', compile=False):
         """Create a file."""
         logger.debug('Creating file "%s" on node "%s" containing %s bytes' % (filename, self.node_id, len(content)))
 
@@ -282,6 +285,7 @@ class KalmonNode:
                 'file': filename,
                 'content': chunk_content,
                 'offset': chunk_offset,
+                'compile': compile and (i == (chunks - 1)),
             })
 
         return
@@ -475,42 +479,78 @@ def node_configuration_set(ctx, key, value):
 
 
 @node_select.command('upgrade')
-@click.option('--repository-url', '-u', default=REPOSITORY_URL, help='Git url for the repository.')
+@click.option('--repository-url', '-u', default=FW_URL, help='Git url for the repository.')
 @click.option('--clone-path', '-p', default='kalmon-ESP8266', help='Path to clone repository to.')
+@click.option('--module', '-m', multiple=True, help='Module to enable and upgrade.')
 @click.option('--reference-only', '-r', is_flag=True, help='Only update the version reference without touching files.')
 @click.pass_context
-def node_upgrade(ctx, repository_url, clone_path, reference_only):
+def node_upgrade(ctx, repository_url, clone_path, reference_only, module):
     """Upgrade a node."""
-    logger.debug('Upgrading node')
+    def is_source_file(f):
+        return f.startswith(FW_SRC_PREFIX)
+
+    def is_module_file(f):
+        return f.startswith(os.path.join(FW_SRC_PREFIX, FW_MODULE_PREFIX))
+
+    def get_module_name(f):
+        match = re.match(os.path.join(FW_SRC_PREFIX, FW_MODULE_PREFIX, '([a-zA-Z0-9_-]+)\.(lua|lc)'), f)
+
+        return match.group(1) if match else None
+
+    def get_module_path(f):
+        return os.path.join(FW_SRC_PREFIX, FW_MODULE_PREFIX, '%s.lua' % f)
+
+    def get_node_path(f):
+        return f[len(FW_SRC_PREFIX):] if f.startswith(FW_SRC_PREFIX) else f
+
+    node = ctx.obj['node']
+    logger.debug('Upgrading node "%s"' % node.node_id)
 
     try:
         repo = git.repo.base.Repo(clone_path)
-    except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError) as e:
+    except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):
         logger.warn('Repository does not exist yet, cloning it now')
         repo = git.repo.base.Repo.clone_from(repository_url, clone_path)
 
     logger.debug('Performing a pull of the repository')
     repo.remotes.origin.pull()
 
-    node = ctx.obj['node']
-    cfg = node.get_configuration()
-    remove_files = []
-    upload_files = []
-
-    latest_version_ref = str(repo.head.commit)
-    version_ref = cfg.get(CFG_KEY_VERSION, None)
+    version_ref_length = 7
+    latest_version_ref = str(repo.head.commit)[:version_ref_length]
 
     if not reference_only:
-        if version_ref:
-            logger.debug('Found commit hash "%s" on node' % version_ref)
+        logger.debug('Getting version and enabled modules from node')
+        cfg = node.get_configuration()
+        files = node.get_files()
+
+        enabled_modules = {}
+
+        for f in files:
+            filename = os.path.join(FW_SRC_PREFIX, f[0])
+
+            if is_module_file(filename):
+                enabled_modules[get_module_name(filename)] = filename
+
+        required_modules = list(enabled_modules.keys()).copy() + FW_BUILTIN_MODULES.copy()
+
+        if module:
+            required_modules += list(module)
+
+        remove_files = []
+        upload_files = []
+
+        current_version_ref = cfg.get(CFG_KEY_VERSION, None)
+
+        if current_version_ref:
+            logger.debug('Found commit hash "%s" on node' % current_version_ref)
         else:
             for commit in repo.iter_commits(rev='HEAD', max_parents=0):
-                version_ref = str(commit)
+                current_version_ref = str(commit)[:version_ref_length]
 
-            logger.debug('Using first commit\'s hash "%s", since none could be found on node' % version_ref)
+            logger.debug('Using first commit\'s hash "%s", since none could be found on node' % current_version_ref)
 
-        logger.debug('Performing diff between HEAD and commit "%s" to determine file changes' % version_ref)
-        diff = repo.commit(version_ref).diff(latest_version_ref)
+        logger.debug('Performing diff between HEAD and commit "%s" to determine file changes' % current_version_ref)
+        diff = repo.commit(current_version_ref).diff(latest_version_ref)
 
         for d in diff.iter_change_type('A'):
             upload_files.append(d.b_path)
@@ -525,33 +565,57 @@ def node_upgrade(ctx, repository_url, clone_path, reference_only):
             remove_files.append(d.a_path)
             upload_files.append(d.b_path)
 
-        upload_files = [x for x in upload_files if x.startswith(REPOSITORY_SRC_PREFIX)]
-        remove_files = [x for x in remove_files if x.startswith(REPOSITORY_SRC_PREFIX)]
+        def is_valid_file(f):
+            return is_source_file(f) and ((not is_module_file(f)) or (get_module_name(f) in required_modules))
+
+        upload_files = [x for x in upload_files if is_valid_file(x)]
+        remove_files = [x for x in remove_files if is_valid_file(x)]
 
         # Files which have to be both uploaded and removed should not be removed
         remove_files = [x for x in remove_files if x not in upload_files]
+
+        for module in required_modules:
+            f = get_module_path(module)
+
+            if (module not in enabled_modules.keys()) and (f not in upload_files) and (f not in remove_files):
+                logger.debug('Uploading module "%s" in addition to other changes' % module)
+                upload_files.append(f)
+
+        for module, f in enabled_modules.items():
+            if (module not in required_modules) and (f not in remove_files):
+                logger.debug('Removing module "%s" in addition to other changes' % module)
+                module_files = [f, get_module_path(module)]
+
+                for module_file in module_files:
+                    remove_files.append(module_file)
+
+                    if module_file in upload_files:
+                        upload_files.remove(module_file)
 
         logger.debug('Determined that %s files are to be removed, %s files are to be uploaded' %
                      (len(remove_files), len(upload_files)))
 
         for f in remove_files:
-            node.remove_file(f)
+            node.remove_file(get_node_path(f))
 
         for f in upload_files:
-            filename = f
+            filename = get_node_path(f)
             filepath = os.path.join(clone_path, f)
             content = ''
-
-            if filename[0:len(REPOSITORY_SRC_PREFIX)] == REPOSITORY_SRC_PREFIX:
-                filename = filename[len(REPOSITORY_SRC_PREFIX):]
 
             with open(filepath, "r") as f:
                 content = f.read()
 
-            node.create_file(filename, content=content)
+            # If the filename ends with .lua, consider it a source file and attempt compilation
+            # compile = filename.endswith('.lua') and (filename != os.path.join(FW_SRC_PREFIX, 'init.lua'))
+            compile = False
+            node.create_file(filename, content=content, compile=compile)
 
     logger.debug('Upgrade finished, writing commit hash "%s" to node' % latest_version_ref)
     node.set_configuration(CFG_KEY_VERSION, latest_version_ref)
+
+    logger.debug('Restarting node')
+    node.attempt_restart()
 
 
 @node_select.command('ctrl')
