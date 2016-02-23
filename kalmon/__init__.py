@@ -531,10 +531,8 @@ def node_upgrade(ctx, repository_url, clone_path, reference_only, module):
             if is_module_file(filename):
                 enabled_modules[get_module_name(filename)] = filename
 
-        required_modules = list(enabled_modules.keys()).copy() + FW_BUILTIN_MODULES.copy()
-
-        if module:
-            required_modules += list(module)
+        required_modules = list(module) if module else list(enabled_modules.keys()).copy()
+        required_modules += FW_BUILTIN_MODULES.copy()
 
         remove_files = []
         upload_files = []
