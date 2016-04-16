@@ -43,11 +43,12 @@ class KalmonController:
     mqtt_connected = False
     nodes = {}
 
-    def __init__(self, mqtt_config={}, debug=False):
+    def __init__(self, mqtt_config={}, debug=False, timeout=2500):
         """Constructor."""
         logger.debug('Initializing Kalmon controller')
 
         self.debug = debug
+        self.timeout = timeout
 
         self.mqtt_config = self.mqtt_defaults.copy()
         self.mqtt_config.update(mqtt_config)
@@ -172,7 +173,7 @@ class KalmonController:
         while mid in self.mqtt_publishes:
             self.wait()
 
-    def publish_mqtt_and_wait(self, topic, data={}, timeout=2500):
+    def publish_mqtt_and_wait(self, topic, data={}):
         """Publish a message to the MQTT broker, waiting for a response and returning the result."""
         result = [None, None]
         finish = Event()
@@ -185,7 +186,7 @@ class KalmonController:
             finish.set()
 
         self.publish_mqtt(topic, data, on_response=on_response)
-        timer = Timer(timeout / 1000, do_timeout)
+        timer = Timer(self.timeout / 1000, do_timeout)
         timer.start()
 
         while (not result[0]) and (not finish.is_set()):
@@ -212,7 +213,7 @@ class KalmonController:
 
         return self.nodes[node_id]
 
-    def get_node_list(self, timeout=2500):
+    def get_node_list(self):
         """Get a list of available node IDs."""
         logger.debug('Updating node list')
         self.subscribe_mqtt('/nodes/+/responses/ping')
@@ -229,7 +230,7 @@ class KalmonController:
             return False
 
         self.publish_mqtt('/ping', on_response=on_response)
-        time.sleep(timeout / 1000)
+        time.sleep(self.timeout / 1000)
 
         return self.node_ids
 
@@ -330,13 +331,15 @@ class KalmonNode:
 @click.option('--mqttport', '-mqp', default=1883)
 @click.option('--mqttusername', '-mqu', default=None)
 @click.option('--mqttpassword', '-mqP', default=None)
+@click.option('--timeout', '-t', default=2500, help='Timeout for RPC operations in milliseconds.')
 @click.pass_context
-def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword):
+def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, timeout):
     """Control devices running Kalmon."""
     logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
 
     ctx.obj['debug'] = debug
     ctx.obj['plain'] = plain
+    ctx.obj['timeout'] = timeout
 
     mqtt_config = {
         'host': mqtthost,
@@ -345,16 +348,15 @@ def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword):
         'password': mqttpassword,
     }
 
-    controller = KalmonController(mqtt_config=mqtt_config, debug=debug)
+    controller = KalmonController(mqtt_config=mqtt_config, debug=debug, timeout=timeout)
     ctx.obj['controller'] = controller
 
 
 @kalmon.command('list')
-@click.option('--timeout', '-t', default=2500, help='Timeout in milliseconds.')
 @click.pass_context
-def node_list(ctx, timeout):
+def node_list(ctx):
     """Get a list of available nodes."""
-    nodes = ctx.obj['controller'].get_node_list(timeout)
+    nodes = ctx.obj['controller'].get_node_list()
     nodes = [[x] for x in nodes]
     click.echo(generate_table(['NODE'], nodes, sort='NODE', plain=ctx.obj['plain']))
 
