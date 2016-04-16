@@ -480,7 +480,7 @@ def node_configuration_set(ctx, key, value):
 
 @node_select.command('upgrade')
 @click.option('--repository-url', '-u', default=FW_URL, help='Git url for the repository.')
-@click.option('--clone-path', '-p', default='kalmon-ESP8266', help='Path to clone repository to.')
+@click.option('--clone-path', '-p', default='~/.kalmon/src', help='Path to clone repository to.')
 @click.option('--module', '-m', multiple=True, help='Module to enable and upgrade.')
 @click.option('--reference-only', '-r', is_flag=True, help='Only update the version reference without touching files.')
 @click.pass_context
@@ -505,6 +505,9 @@ def node_upgrade(ctx, repository_url, clone_path, reference_only, module):
 
     node = ctx.obj['node']
     logger.debug('Upgrading node "%s"' % node.node_id)
+
+    clone_path = os.path.expanduser(clone_path)
+    os.makedirs(clone_path, exist_ok=True)
 
     try:
         repo = git.repo.base.Repo(clone_path)
