@@ -12,6 +12,8 @@ import time
 import uuid
 import json
 import os
+import socket
+import select
 
 
 FW_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
@@ -28,31 +30,20 @@ class KalmonController:
 
     """Kalmon Controller."""
 
-    mqtt_defaults = {
-        'host': 'localhost',
-        'port': 1883,
-        'keepalive': 60,
-        'username': None,
-        'password': None,
-    }
-
-    mqtt_publish_callbacks = {}
-    mqtt_response_callbacks = {}
-    mqtt_subscriptions = []
-    mqtt_publishes = []
-    mqtt_connected = False
+    defaults = {}
     nodes = {}
 
-    def __init__(self, mqtt_config={}, debug=False, timeout=2500):
+    def __init__(self, options={}, debug=False, timeout=2500):
         """Constructor."""
         logger.debug('Initializing Kalmon controller')
+
+        self.options = self.defaults.copy()
+        self.options.update(options)
 
         self.debug = debug
         self.timeout = timeout
 
-        self.mqtt_config = self.mqtt_defaults.copy()
-        self.mqtt_config.update(mqtt_config)
-        self.start_mqtt()
+        self.start()
 
     def __enter__(self):
         """Enter resource scope."""
@@ -65,23 +56,183 @@ class KalmonController:
 
     def close(self):
         """Perform closing tasks and clean up."""
+        self.stop()
+
+    def start(self):
+        """Initialize and start the controller."""
+        logger.debug('Starting Kalmon controller')
+        pass
+
+    def stop(self):
+        """Stop the controller."""
+        logger.debug('Stopping Kalmon controller')
+        pass
+
+    def select_node(self, node_id):
+        """Select a node by ID."""
+        if node_id not in self.nodes:
+            node = KalmonNode(self, node_id)
+            self.nodes[node_id] = node
+
+        return self.nodes[node_id]
+
+    def get_node_list(self):
+        """Get a list of available node IDs."""
+        return []
+
+    def wait(self):
+        """Wait for a bit."""
+        time.sleep(0.010)
+
+    def publish(self, node, topic, data={}, on_publish=None, on_response=None):
+        """Publish a message for a node."""
+        pass
+
+    def publish_and_wait(self, node, topic, data={}):
+        """Publish a message for a node, waiting for a response and returning the result."""
+        pass
+
+
+class KalmonTCPController(KalmonController):
+
+    """Kalmon TCP Controller."""
+
+    defaults = {
+        'port': 80,
+    }
+
+    def publish(self, node, topic, data={}, on_publish=None, on_response=None):
+        """Publish a message for a node."""
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn.connect((node.node_id, self.options['port']))
+
+        # JSON encode dicts, lists and stuff
+        if type(data) in [dict, list, tuple]:
+            data = json.dumps(data)
+
+        payload = {
+            'cmd': topic,
+            'data': data,
+        }
+        payload = json.dumps(payload)
+        conn.send(bytes(payload, 'utf8'))
+
+        if on_publish:
+            on_publish()
+
+        conn.setblocking(0)
+        ready = select.select([conn], [], [], self.timeout / 1000)
+        payload, data = None, None
+
+        if ready[0]:
+            payload = conn.recv(8192)
+            payload = str(payload, 'utf8')
+            logger.debug('Received %s byte TCP response' % len(payload))
+
+            try:
+                data = json.loads(payload)
+            except json.decoder.JSONDecodeError as e:
+                logger.error('Error while JSON decoding message payload: %s' % e)
+
+            if on_response:
+                on_response(payload, data)
+
+        conn.close()
+
+        return payload, data
+
+    def publish_and_wait(self, node, topic, data={}):
+        """Publish a message for a node, waiting for a response and returning the result."""
+        return self.publish(node, topic, data=data)
+
+
+class KalmonMQTTController(KalmonController):
+
+    """Kalmon MQTT Controller."""
+
+    defaults = {
+        'host': 'localhost',
+        'port': 1883,
+        'keepalive': 60,
+        'username': None,
+        'password': None,
+    }
+
+    publish_callbacks = {}
+    response_callbacks = {}
+    subscriptions = []
+    publishes = []
+    connected = False
+
+    def __init__(self, **kwargs):
+        """Constructor."""
+        super().__init__(**kwargs)
+
+    def start(self):
+        """Start the controller."""
+        super().start()
+        self.start_mqtt()
+
+    def stop(self):
+        """Stop the controller."""
         self.stop_mqtt()
+        super().stop()
+
+    def publish(self, node, topic, **kwargs):
+        """Publish a message for a node."""
+        topic = self.generate_node_topic(node, topic)
+
+        return self.publish_mqtt(topic, **kwargs)
+
+    def publish_and_wait(self, node, topic, **kwargs):
+        """Publish a message for a node, waiting for a response and returning the result."""
+        topic = self.generate_node_topic(node, topic)
+
+        return self.publish_and_wait_mqtt(topic, **kwargs)
+
+    def select_node(self, *args):
+        """Select a node by ID."""
+        node = super().select_node(*args)
+        self.subscribe_mqtt(self.generate_node_topic(node, '#', type='responses'))
+
+        return node
+
+    def get_node_list(self):
+        """Get a list of available node IDs."""
+        logger.debug('Updating node list')
+        self.subscribe_mqtt('/nodes/+/responses/ping')
+        self.node_ids = []
+
+        def on_response(payload, data):
+            if data and data.get('node', None):
+                node_id = data['node']
+                logger.debug('Found node with ID "%s"' % node_id)
+
+                if node_id not in self.node_ids:
+                    self.node_ids.append(node_id)
+
+            return False
+
+        self.publish_mqtt('/ping', on_response=on_response)
+        time.sleep(self.timeout / 1000)
+
+        return self.node_ids
 
     def start_mqtt(self):
         """Initialize and start the MQTT client."""
-        def on_mqtt_connect(client, userdata, flags, rc):
+        def on_connect(client, userdata, flags, rc):
             logger.debug('MQTT client connected with result code "%s"' % rc)
-            self.mqtt_connected = True
+            self.connected = True
 
-            for topic in self.mqtt_subscriptions:
+            for topic in self.subscriptions:
                 logger.debug('Subscribing to MQTT topic "%s"' % topic)
                 client.subscribe(topic)
 
-        def on_mqtt_disconnect(client, userdata, rc):
+        def on_disconnect(client, userdata, rc):
             logger.debug('MQTT client disconnected with result code "%s"' % rc)
-            self.mqtt_connected = False
+            self.connected = False
 
-        def on_mqtt_message(client, userdata, message):
+        def on_message(client, userdata, message):
             payload = str(message.payload, 'utf8')
             logger.debug('Received %s byte MQTT message at topic "%s"' % (len(payload), message.topic))
 
@@ -96,48 +247,48 @@ class KalmonController:
             if data and data.get('rid', None):
                 rid = data['rid']
 
-                if rid in self.mqtt_response_callbacks:
-                    result = self.mqtt_response_callbacks[rid](client, userdata, message, payload, data)
+                if rid in self.response_callbacks:
+                    result = self.response_callbacks[rid](payload, data)
 
                     if result is not False:
-                        self.mqtt_response_callbacks.pop(rid, None)
+                        self.response_callbacks.pop(rid, None)
 
-        def on_mqtt_publish(client, userdata, mid):
+        def on_publish(client, userdata, mid):
             logger.debug('Published message "%s" over MQTT' % mid)
 
             # Since the message ID is only generated when publishing,
             # we have to publish BEFORE registering any callbacks.
             # To prevent issues, we wait until these callbacks have been
             # registered before continueing
-            while mid not in self.mqtt_publishes:
+            while mid not in self.publishes:
                 self.wait()
 
-            self.mqtt_publishes.remove(mid)
+            self.publishes.remove(mid)
 
-            if mid in self.mqtt_publish_callbacks:
-                self.mqtt_publish_callbacks[mid](client, userdata, mid)
-                self.mqtt_publish_callbacks.pop(mid, None)
+            if mid in self.publish_callbacks:
+                self.publish_callbacks[mid]()
+                self.publish_callbacks.pop(mid, None)
 
         self.mqtt = mqtt.Client()
-        self.mqtt.on_connect = on_mqtt_connect
-        self.mqtt.on_disconnect = on_mqtt_disconnect
-        self.mqtt.on_message = on_mqtt_message
-        self.mqtt.on_publish = on_mqtt_publish
+        self.mqtt.on_connect = on_connect
+        self.mqtt.on_disconnect = on_disconnect
+        self.mqtt.on_message = on_message
+        self.mqtt.on_publish = on_publish
 
-        if self.mqtt_config.get('username', None):
+        if self.options.get('username', None):
             logger.debug('Using username "%s" for MQTT %s a password',
-                         self.mqtt_config['username'], 'WITH' if self.mqtt_config.get('password', None) else 'WITHOUT')
-            self.mqtt.username_pw_set(self.mqtt_config['username'], password=self.mqtt_config.get('password', None))
+                         self.options['username'], 'WITH' if self.options.get('password', None) else 'WITHOUT')
+            self.mqtt.username_pw_set(self.options['username'], password=self.options.get('password', None))
 
         try:
-            logger.debug('Connecting to MQTT server at "%s:%s"' % (self.mqtt_config['host'], self.mqtt_config['port']))
-            self.mqtt.connect(self.mqtt_config['host'], self.mqtt_config['port'], self.mqtt_config['keepalive'])
+            logger.debug('Connecting to MQTT server at "%s:%s"' % (self.options['host'], self.options['port']))
+            self.mqtt.connect(self.options['host'], self.options['port'], self.options['keepalive'])
             self.mqtt.loop_start()
         except Exception as e:
             logger.error('Error while connecting to MQTT server: %s' % e)
             exit(1)
 
-        while not self.mqtt_connected:
+        while not self.connected:
             self.wait()
 
     def stop_mqtt(self):
@@ -163,22 +314,22 @@ class KalmonController:
         result, mid = self.mqtt.publish(topic, payload)
 
         if on_publish:
-            self.mqtt_publish_callbacks[mid] = on_publish
+            self.publish_callbacks[mid] = on_publish
 
         if on_response and data and data.get('rid', None):
-            self.mqtt_response_callbacks[data['rid']] = on_response
+            self.response_callbacks[data['rid']] = on_response
 
-        self.mqtt_publishes.append(mid)
+        self.publishes.append(mid)
 
-        while mid in self.mqtt_publishes:
+        while mid in self.publishes:
             self.wait()
 
-    def publish_mqtt_and_wait(self, topic, data={}):
+    def publish_and_wait_mqtt(self, topic, data={}):
         """Publish a message to the MQTT broker, waiting for a response and returning the result."""
         result = [None, None]
         finish = Event()
 
-        def on_response(client, userdata, message, payload, data):
+        def on_response(payload, data):
             result[0] = payload
             result[1] = data
 
@@ -195,48 +346,19 @@ class KalmonController:
         timer.cancel()
 
         if finish.is_set():
-            raise TimeoutError('Reached timeout of %sms while waiting for response!' % timeout)
+            raise TimeoutError('Reached timeout of %sms while waiting for response!' % self.timeout)
 
         return result
 
     def subscribe_mqtt(self, topic):
         """Subscribe to a specific MQTT topic."""
-        if topic not in self.mqtt_subscriptions:
-            self.mqtt_subscriptions.append(topic)
+        if topic not in self.subscriptions:
+            self.subscriptions.append(topic)
             self.mqtt.subscribe(topic)
 
-    def select_node(self, node_id):
-        """Select a node by ID."""
-        if node_id not in self.nodes:
-            node = KalmonNode(self, node_id)
-            self.nodes[node_id] = node
-
-        return self.nodes[node_id]
-
-    def get_node_list(self):
-        """Get a list of available node IDs."""
-        logger.debug('Updating node list')
-        self.subscribe_mqtt('/nodes/+/responses/ping')
-        self.node_ids = []
-
-        def on_response(client, userdata, message, payload, data):
-            if data and data.get('node', None):
-                node_id = data['node']
-                logger.debug('Found node with ID "%s"' % node_id)
-
-                if node_id not in self.node_ids:
-                    self.node_ids.append(node_id)
-
-            return False
-
-        self.publish_mqtt('/ping', on_response=on_response)
-        time.sleep(self.timeout / 1000)
-
-        return self.node_ids
-
-    def wait(self):
-        """Wait for a bit."""
-        time.sleep(0.010)
+    def generate_node_topic(self, node, topic, type='commands'):
+        """Generate a full topic from a partial topic for a node."""
+        return '/nodes/%s/%s/%s' % (node.node_id, type, topic)
 
 
 class KalmonNode:
@@ -249,15 +371,14 @@ class KalmonNode:
 
         self.node_id = node_id
         self.controller = controller
-        self.controller.subscribe_mqtt(self.generate_topic('/responses/#'))
 
     def attempt_restart(self):
         """Attempt to restart the node."""
-        self.controller.publish_mqtt(self.generate_topic('/commands/restart'))
+        self.controller.publish(self, 'restart')
 
     def get_info(self):
         """Get node info."""
-        payload, data = self.controller.publish_mqtt_and_wait(self.generate_topic('/commands/info'))
+        payload, data = self.controller.publish_and_wait(self, 'info')
 
         return data
 
@@ -282,7 +403,7 @@ class KalmonNode:
             chunk_offset = i * chunk_size
             chunk_content = content[chunk_offset:chunk_offset + chunk_size]
 
-            payload, data = self.controller.publish_mqtt_and_wait(self.generate_topic('/commands/files/create'), {
+            payload, data = self.controller.publish_and_wait(self, 'files/create', data={
                 'file': filename,
                 'content': chunk_content,
                 'offset': chunk_offset,
@@ -295,7 +416,7 @@ class KalmonNode:
         """Remove a file."""
         logger.debug('Removing file "%s" from node "%s"' % (filename, self.node_id))
 
-        payload, data = self.controller.publish_mqtt_and_wait(self.generate_topic('/commands/files/remove'), {
+        payload, data = self.controller.publish_and_wait(self, 'files/remove', data={
             'file': filename,
         })
 
@@ -312,16 +433,12 @@ class KalmonNode:
         """Set node configuration."""
         logger.debug('Setting configuration key "%s" of node "%s" to value "%s"' % (self.node_id, key, value))
 
-        payload, data = self.controller.publish_mqtt_and_wait(self.generate_topic('/commands/cfg/set'), {
+        payload, data = self.controller.publish_and_wait(self, 'cfg/set', data={
             'key': key,
             'value': value,
         })
 
         return data
-
-    def generate_topic(self, topic):
-        """Generate a full topic from a partial topic."""
-        return '/nodes/%s%s' % (self.node_id, topic)
 
 
 @click.group()
@@ -331,9 +448,11 @@ class KalmonNode:
 @click.option('--mqttport', '-mqp', default=1883)
 @click.option('--mqttusername', '-mqu', default=None)
 @click.option('--mqttpassword', '-mqP', default=None)
+@click.option('--tcpport', '-tP', default=80)
+@click.option('--controller', '-c', default='MQTT', type=click.Choice(['MQTT', 'TCP']), help='Controller to use.')
 @click.option('--timeout', '-t', default=2500, help='Timeout for RPC operations in milliseconds.')
 @click.pass_context
-def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, timeout):
+def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, tcpport, controller, timeout):
     """Control devices running Kalmon."""
     logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
 
@@ -341,14 +460,20 @@ def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, ti
     ctx.obj['plain'] = plain
     ctx.obj['timeout'] = timeout
 
-    mqtt_config = {
-        'host': mqtthost,
-        'port': mqttport,
-        'username': mqttusername,
-        'password': mqttpassword,
-    }
+    if controller == 'MQTT':
+        options = {
+            'host': mqtthost,
+            'port': mqttport,
+            'username': mqttusername,
+            'password': mqttpassword,
+        }
+        controller = KalmonMQTTController(options=options, debug=debug, timeout=timeout)
+    elif controller == 'TCP':
+        options = {
+            'port': tcpport,
+        }
+        controller = KalmonTCPController(options=options, debug=debug, timeout=timeout)
 
-    controller = KalmonController(mqtt_config=mqtt_config, debug=debug, timeout=timeout)
     ctx.obj['controller'] = controller
 
 
