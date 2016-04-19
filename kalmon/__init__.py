@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import select
+import netifaces
 
 
 FW_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
@@ -35,7 +36,7 @@ class KalmonController:
 
     def __init__(self, options={}, debug=False, timeout=2500):
         """Constructor."""
-        logger.debug('Initializing Kalmon controller')
+        logger.debug('Initializing controller of type "%s"', self.__class__.__name__)
 
         self.options = self.defaults.copy()
         self.options.update(options)
@@ -47,29 +48,33 @@ class KalmonController:
 
     def __enter__(self):
         """Enter resource scope."""
+        logger.debug('Entering controller scope')
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Exit resource scope."""
-        logger.debug('Shutting down Kalmon controller')
+        logger.debug('Exiting controller scope')
         self.close()
 
     def close(self):
         """Perform closing tasks and clean up."""
+        logger.debug('Closing controller')
         self.stop()
 
     def start(self):
         """Initialize and start the controller."""
-        logger.debug('Starting Kalmon controller')
+        logger.debug('Starting controller')
         pass
 
     def stop(self):
         """Stop the controller."""
-        logger.debug('Stopping Kalmon controller')
+        logger.debug('Stopping controller')
         pass
 
     def select_node(self, node_id):
         """Select a node by ID."""
+        logger.debug('Selecting node with ID "%s"', node_id)
+
         if node_id not in self.nodes:
             node = KalmonNode(self, node_id)
             self.nodes[node_id] = node
@@ -101,8 +106,32 @@ class KalmonTCPController(KalmonController):
         'port': 80,
     }
 
+    def get_node_list(self):
+        """Get a list of available node IDs."""
+        logger.debug('Retrieving node list')
+        self.node_ids = []
+
+        # Iterate over interfaces, try to grab gateway ipv4 addr
+        # Try to /ping gateway over TCP using default port.. if we get a pong, we may get a node ID
+        gateways = netifaces.gateways()
+        gateways = gateways.get(netifaces.AF_INET, [])
+
+        for gateway in gateways:
+            node_id = gateway[0]
+            node = self.select_node(node_id)
+            info = node.get_info()
+
+            if info and info.get('node'):
+                logger.debug('Found node with ID "%s"', node_id)
+                self.node_ids.append(node_id)
+
+        return self.node_ids
+
     def publish(self, node, topic, data={}, on_publish=None, on_response=None):
         """Publish a message for a node."""
+        logger.debug('Publishing "%s" data to node "%s"', topic, node.node_id)
+
+        logger.debug('Connecting to "%s:%s" over TCP socket', node.node_id, self.options['port'])
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         conn.connect((node.node_id, self.options['port']))
 
@@ -115,9 +144,13 @@ class KalmonTCPController(KalmonController):
             'data': data,
         }
         payload = json.dumps(payload)
-        conn.send(bytes(payload, 'utf8'))
+        payload = bytes(payload, 'utf8')
+
+        logger.debug('Sending %s bytes of data', len(payload))
+        conn.send(payload)
 
         if on_publish:
+            logger.debug('Calling publish callback')
             on_publish()
 
         conn.setblocking(0)
@@ -127,7 +160,7 @@ class KalmonTCPController(KalmonController):
         if ready[0]:
             payload = conn.recv(8192)
             payload = str(payload, 'utf8')
-            logger.debug('Received %s byte TCP response' % len(payload))
+            logger.debug('Received %s bytes of data' % len(payload))
 
             try:
                 data = json.loads(payload)
@@ -135,8 +168,10 @@ class KalmonTCPController(KalmonController):
                 logger.error('Error while JSON decoding message payload: %s' % e)
 
             if on_response:
+                logger.debug('Calling response callback')
                 on_response(payload, data)
 
+        logger.debug('Closing connection')
         conn.close()
 
         return payload, data
@@ -491,7 +526,6 @@ def node_list(ctx):
 @click.pass_context
 def node_select(ctx, node_id):
     """Select a node."""
-    logger.debug('Selecting node with ID "%s"', node_id)
     node = ctx.obj['controller'].select_node(node_id)
     ctx.obj['node'] = node
 
