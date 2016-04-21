@@ -41,6 +41,7 @@ setup(
         'paho-mqtt',
         'click',
         'prettytable',
-        'gitpython'
+        'gitpython',
+        'netifaces'
     ],
 )
