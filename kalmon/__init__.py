@@ -654,6 +654,20 @@ def node_configuration_list(ctx):
 @click.pass_context
 def node_configuration_set(ctx, key, value):
     """Set node configuration."""
+    if value.lower() in ['true']:
+        value = True
+    elif value.lower() in ['false']:
+        value = False
+    elif value.lower() in ['null', 'none', 'nil']:
+        value = None
+    elif value.isdigit():
+        value = int(value)
+    else:
+        try:
+            value = float(value)
+        except ValueError:
+            pass
+
     try:
         ctx.obj['node'].set_configuration(key, value=value)
     except TimeoutError as e:
