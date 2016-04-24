@@ -424,6 +424,14 @@ class KalmonNode:
 
         return data
 
+    def get_stats(self):
+        """Get node stats."""
+        info = self.get_info()
+        data = info.get('stats', {}) if info else {}
+        # data['node'] = data['node'] if data.get('node') else info['node']
+
+        return data
+
     def create_file(self, filename, content='', compile=False):
         """Create a file."""
         logger.debug('Creating file "%s" on node "%s" containing %s bytes' % (filename, self.node_id, len(content)))
@@ -535,6 +543,20 @@ def node_select(ctx, node_id):
 def node_restart(ctx):
     """Attempt to restart a node."""
     ctx.obj['node'].attempt_restart()
+
+
+@node_select.command('stats')
+@click.pass_context
+def node_stats(ctx):
+    """Get stats for a node."""
+    try:
+        data = ctx.obj['node'].get_stats()
+    except TimeoutError as e:
+        logger.error('Error: %s' % e)
+        exit(1)
+
+    data = [[k, v] for k, v in data.items()]
+    click.echo(generate_table(['KEY', 'VALUE'], data, sort='KEY', plain=ctx.obj['plain']))
 
 
 @node_select.group('file')
