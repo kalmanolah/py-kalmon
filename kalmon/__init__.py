@@ -12,6 +12,7 @@ import time
 import uuid
 import json
 import os
+import ssl
 import socket
 import select
 import netifaces
@@ -191,6 +192,7 @@ class KalmonMQTTController(KalmonController):
         'keepalive': 60,
         'username': None,
         'password': None,
+        'secure': False,
     }
 
     publish_callbacks = {}
@@ -309,6 +311,11 @@ class KalmonMQTTController(KalmonController):
         self.mqtt.on_disconnect = on_disconnect
         self.mqtt.on_message = on_message
         self.mqtt.on_publish = on_publish
+
+        if self.options.get('secure', False):
+            logger.debug('Enabling TLS')
+            self.mqtt.tls_set('/etc/ssl/certs/ca-certificates.crt', cert_reqs=ssl.CERT_NONE)
+            self.mqtt.tls_insecure_set(True)
 
         if self.options.get('username', None):
             logger.debug('Using username "%s" for MQTT %s a password',
@@ -491,11 +498,12 @@ class KalmonNode:
 @click.option('--mqttport', '-mqp', default=1883)
 @click.option('--mqttusername', '-mqu', default=None)
 @click.option('--mqttpassword', '-mqP', default=None)
+@click.option('--mqttsecure', '-mqS', default=False)
 @click.option('--tcpport', '-tP', default=80)
 @click.option('--controller', '-c', default='MQTT', type=click.Choice(['MQTT', 'TCP']), help='Controller to use.')
 @click.option('--timeout', '-t', default=2500, help='Timeout for RPC operations in milliseconds.')
 @click.pass_context
-def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, tcpport, controller, timeout):
+def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, mqttsecure, tcpport, controller, timeout):
     """Control devices running Kalmon."""
     logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
 
@@ -509,6 +517,7 @@ def kalmon(ctx, debug, plain, mqtthost, mqttport, mqttusername, mqttpassword, tc
             'port': mqttport,
             'username': mqttusername,
             'password': mqttpassword,
+            'secure': mqttsecure,
         }
         controller = KalmonMQTTController(options=options, debug=debug, timeout=timeout)
     elif controller == 'TCP':
