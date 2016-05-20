@@ -21,7 +21,7 @@ import netifaces
 FW_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
 FW_SRC_PREFIX = 'src/'
 FW_MODULE_PREFIX = 'module/'
-FW_BUILTIN_MODULES = ['kalmon', 'settings']
+FW_BUILTIN_MODULES = ['kalmon']
 CFG_KEY_VERSION = 'kalmon_ref'
 
 
