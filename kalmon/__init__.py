@@ -353,7 +353,7 @@ class KalmonMQTTController(KalmonController):
         if type(data) in [dict, list, tuple]:
             payload = json.dumps(data)
 
-        result, mid = self.mqtt.publish(topic, payload)
+        result, mid = self.mqtt.publish(topic, payload, qos=1)
 
         if on_publish:
             self.publish_callbacks[mid] = on_publish
