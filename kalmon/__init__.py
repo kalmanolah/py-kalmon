@@ -379,16 +379,18 @@ class KalmonMQTTController(KalmonController):
             finish.set()
 
         self.publish_mqtt(topic, data, on_response=on_response)
-        timer = Timer(self.timeout / 1000, do_timeout)
-        timer.start()
 
-        while (not result[0]) and (not finish.is_set()):
-            self.wait()
+        if self.timeout > -1:
+            timer = Timer(self.timeout / 1000, do_timeout)
+            timer.start()
 
-        timer.cancel()
+            while (not result[0]) and (not finish.is_set()):
+                self.wait()
 
-        if finish.is_set():
-            raise TimeoutError('Reached timeout of %sms while waiting for response!' % self.timeout)
+            timer.cancel()
+
+            if finish.is_set():
+                raise TimeoutError('Reached timeout of %sms while waiting for response!' % self.timeout)
 
         return result
 
