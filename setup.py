@@ -42,6 +42,7 @@ setup(
         'click',
         'prettytable',
         'gitpython',
-        'netifaces'
+        'netifaces',
+        'shortuuid',
     ],
 )

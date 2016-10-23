@@ -9,13 +9,13 @@ from math import ceil
 import re
 import git
 import time
-import uuid
 import json
 import os
 import ssl
 import socket
 import select
 import netifaces
+import shortuuid
 
 
 FW_URL = 'https://github.com/kalmanolah/kalmon-ESP8266.git'
@@ -201,9 +201,9 @@ class KalmonMQTTController(KalmonController):
     publishes = []
     connected = False
 
-    def __init__(self, **kwargs):
+    def __init__(self, *args, **kwargs):
         """Constructor."""
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
 
     def start(self):
         """Start the controller."""
@@ -347,7 +347,7 @@ class KalmonMQTTController(KalmonController):
         # If this is a dict and we're allowed to inject a request ID, do so
         # Injecting a request ID allows the nodes to respond and us to execute callbacks
         if (type(data) is dict) and inject_rid:
-            data['rid'] = str(uuid.uuid4())
+            data['rid'] = str(shortuuid.uuid())
 
         # JSON encode dicts, lists and stuff
         if type(data) in [dict, list, tuple]:

@@ -19,6 +19,8 @@ $ sudo pip3 install -U git+https://github.com/kalmanolah/py-kalmon.git
 * paho-mqtt
 * prettytable
 * gitpython
+* netifaces
+* shortuuid
 
 ## TODO
 
